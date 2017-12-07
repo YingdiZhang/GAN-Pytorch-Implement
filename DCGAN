@@ -1,0 +1,207 @@
+import torch.nn as nn
+from torch.autograd import Variable
+from torchvision.utils import save_image
+import torchvision.datasets
+import torchvision.transforms as transforms
+import torch.utils.data
+import torch.optim as optim
+import torchvision.utils as vutils
+import time
+import torch
+
+# ###initialize weights
+start_time = time.time()
+# hyperparameters
+batch_size = 128
+lr = 0.0003
+epochs = 500
+nz = 100  # latent vector
+# ng = 1024  # hidden layers neurons of Generator
+# nd = 1024  # hidden layer neurons of Discriminator
+isize = 28  # image width & highth
+n_channel = 1     # color channels
+trans = transforms.Compose([transforms.ToTensor(),
+                           transforms.Normalize((0.5, 0.5, 0.5),
+                                                (0.5, 0.5, 0.5))])  # transforms.Compose输入为一list
+# trans = transforms.ToTensor()
+# define dataloader
+train_data = torchvision.datasets.MNIST('./mnist_dataset/',
+                                        train=True,
+                                        transform=trans,
+                                        download=True)
+train_loader = torch.utils.data.DataLoader(dataset=train_data,
+                                           batch_size=batch_size,
+                                           shuffle=False)
+
+
+# custom weights initialization called on netG and netD
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        m.weight.data.normal_(0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        m.weight.data.normal_(1.0, 0.02)
+        m.bias.data.fill_(0)
+
+
+def denorm(x):
+    out = (x + 1) / 2
+    return out.clamp(0, 1)
+
+
+class DCGAN_G(nn.Module):
+    def __init__(self, nz=nz, n_channel=n_channel, isize=isize):
+        super(DCGAN_G, self).__init__()
+        self.fc1 = nn.ConvTranspose2d(nz, 512, kernel_size=4) # 网络结构参考DCGAN
+        main = nn.Sequential(nn.ConvTranspose2d(512, 256, 3, stride=1),
+                             # output 6*6
+                             nn.BatchNorm2d(256),
+                             nn.LeakyReLU(),
+                             nn.ConvTranspose2d(256, 128, 3, stride=2),
+                             # output 13*13
+                             nn.BatchNorm2d(128),
+                             nn.LeakyReLU(),
+                             nn.ConvTranspose2d(128, n_channel, 4, stride=2),
+                             # output 28*28
+                             nn.Tanh()
+                             )
+        self.main = main
+        self.nz = nz
+        self.n_channel = n_channel
+        self.isize=isize
+
+    def forward(self, z):
+        z = z.view(z.size(0), z.size(1), 1, 1)
+        output = self.fc1(z)
+        # print(output.size())
+        # output = output.view(-1, 1024, 4, 4)
+        #  print(output)
+        output = self.main(output)
+        # print(output)
+        output = output.view(-1, self.n_channel, 28, 28)
+        # print(output)
+        return output
+
+
+class DCGAN_D(nn.Module):
+    def __init__(self, n_channel=n_channel):
+        super(DCGAN_D, self).__init__()
+        main = nn.Sequential(nn.Conv2d(n_channel, 64, kernel_size=5),
+                             # output 24*24
+                             nn.BatchNorm2d(64),
+                             nn.LeakyReLU(),
+                             nn.Conv2d(64, 128, kernel_size=5),
+                             # output 20*20
+                             nn.BatchNorm2d(128),
+                             nn.LeakyReLU(),
+                             nn.Conv2d(128, 128, kernel_size=4, stride=2),
+                             # output 7*7
+                             nn.BatchNorm2d(128),
+                             nn.LeakyReLU(),
+                             nn.Conv2d(128, 64, kernel_size=4),
+                             # outout 4*4
+                             nn.BatchNorm2d(64),
+                             nn.LeakyReLU(),
+                             nn.Conv2d(64, 1, kernel_size=4),
+                             # output 1*1
+                             # nn.BatchNorm2d(1),
+                             nn.Sigmoid())
+        self.main = main
+        self.n_channel = n_channel
+
+    def forward(self, x):
+        output = self.main(x)
+        output = output.view(-1, 1)
+        return output
+
+
+G = DCGAN_G(nz=nz, n_channel=n_channel)
+D = DCGAN_D(n_channel=n_channel)
+G.apply(weights_init)
+D.apply(weights_init)
+G = G.cuda()
+D = D.cuda()
+
+# print(G)
+# print(D)
+optimizer_g = optim.RMSprop(G.parameters(), lr=lr)
+optimizer_d = optim.RMSprop(D.parameters(), lr=lr)
+
+criterion = nn.BCELoss()  #####???????
+
+print('Train Start!')
+predict_epoch = torch.rand(1)[0]*epochs
+for epoch in range(epochs):
+    epoch_start = time.time()
+    for idx, data in enumerate(train_loader):
+        # train D with real
+        # print(idx)
+        D.zero_grad()
+        data, _ = data
+        real_img = data # prepared for later save
+        data = Variable(data.cuda())
+        output_real = D(data)
+        real_score = output_real
+        # print(output_real)
+        label_real = torch.ones(output_real.size())
+        label_real = Variable(label_real.cuda())
+        errD_real = criterion(output_real, label_real)
+        # errD_real.backward()
+        # train D with fake
+        noise = torch.randn(batch_size, nz)
+        noise = Variable(noise.cuda())
+        # print(G(noise).detatch())
+        # G(noise)
+        output_fake = D(G(noise).detach())
+        fake_score = output_fake
+        label_fake = torch.zeros(output_fake.size())
+        label_fake = Variable(label_fake.cuda())
+        errD_fake = criterion(output_fake, label_fake)
+        # errD_fake.backward()
+        errD = errD_real + errD_fake
+        errD.backward()
+        optimizer_d.step()
+        #######train G
+        noisev = torch.randn(batch_size, nz)
+        noisev = Variable(noisev.cuda())
+        G.zero_grad()
+        # D.zero_grad()
+        img_fake = G(noisev)
+        output = D(img_fake)
+        label = Variable(torch.ones(output.size()).cuda())
+        errG = criterion(output, label)
+        errG.backward()
+        optimizer_g.step()
+        # print(idx)
+        if idx % 100 == 0:
+            print('[%d|%d]Loss_D:%3f Loss_G:%3f D(x):%3f  D(G(z)):%3f'
+                  % (epoch, idx, errD.data[0], errG.data[0], real_score.data.mean(), fake_score.data.mean()))
+        # if (epoch+1) % 1 == 0:
+            #for i in range(16):
+             #  noise = torch.rand(1, nz)
+              # noise = Variable(noise.cuda(), volatile=True)
+               #fake = G(noise)
+               #vutils.save_image(fake.data, filename='./img_mnist/epoch%d_idx%d_fake_img_%d.png'
+                #                 % (epoch, idx, i), normalize=True)
+    vutils.save_image(denorm(img_fake.data), './mnist_fake_data/fake_images-%d.png' % epoch)
+    if epoch == predict_epoch :
+        vutils.save_image(real_img, './mnist_fake_data/REAL_IMAGE-%d.png' % epoch)
+    print('epoch%d runtime:%3f' % (epoch, time.time()-epoch_start))
+    vutils.save_image(real_img, './mnist_fake_data/REAL_IMAGE.png')
+print('all_time: %3f' % (time.time()-start_time))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
